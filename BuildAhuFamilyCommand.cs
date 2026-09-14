@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.IO;
 using System.Linq;
 using Autodesk.Revit.Attributes;
 using Autodesk.Revit.DB;
@@ -13,14 +12,15 @@ namespace AHU_BUILDER
     {
         private const double MmPerFoot = 304.8;
 
+        // Main dimensions taken from the supplied vendor DXF.
         private const double L = 5036.0;
         private const double W = 1780.0;
         private const double H = 1720.0;
         private const double BaseH = 100.0;
-        private const double Frame = 60.0;
 
-        private static readonly string DefaultDxfPath =
-            @"C:\Users\m.abdellatif\Desktop\AC\_-P-231\_HUMAIN\_AI\_DC101\_50\_MW\Humain DC-Critical Building\_R1\_COPY\_AHU-CIR-M-1C, AHU-CIR-1D\_2860271_.DXF";
+        private const double Frame = 45.0;
+        private const double Skin = 28.0;
+        private const double DoorGap = 8.0;
 
         public Result Execute(ExternalCommandData commandData, ref string message, ElementSet elements)
         {
@@ -39,28 +39,29 @@ namespace AHU_BUILDER
 
             try
             {
-                using (Transaction tx = new Transaction(doc, "Build Detailed AHU"))
+                using (Transaction tx = new Transaction(doc, "Build AHU Exterior"))
                 {
                     tx.Start();
+
                     EnsureFamilyParameters(doc.FamilyManager);
-                    BuildCabinetFrame(doc);
-                    BuildExternalPanelsAndDoors(doc);
-                    BuildInternalBulkheads(doc);
-                    BuildInletDampers(doc);
-                    BuildFilterBank(doc);
-                    BuildCoolingCoil(doc);
-                    BuildElectricCoil(doc);
-                    BuildDrainPansAndPipeStubs(doc);
-                    BuildDehumidifier(doc);
-                    BuildFanArray(doc);
-                    BuildLights(doc);
-                    TryImportDxf(doc, Find3DOrPlanView(doc), DefaultDxfPath);
+                    BuildContinuousCabinet(doc);
+                    BuildBaseAndPerimeterFrame(doc);
+                    BuildRoofPanels(doc);
+                    BuildFrontServicePanels(doc);
+                    BuildRearPanels(doc);
+                    BuildEndPanels(doc);
+                    BuildModuleJoints(doc);
+                    BuildInletLouver(doc);
+                    BuildTopWeatherHood(doc);
+
                     tx.Commit();
                 }
 
-                TaskDialog.Show("AHU Builder",
-                    "Detailed AHU generated from the supplied DXF.\n\n" +
-                    "Included: frame, panels, access doors, dampers, filters, cooling coil, electric coil, drain pans, pipe stubs, dehumidifier, 4-fan array and lights.");
+                TaskDialog.Show(
+                    "AHU Builder",
+                    "Exterior-focused AHU family generated successfully.\n\n" +
+                    "The model now prioritizes a continuous realistic casing, service doors, frames, hinges, handles, roof panels, module joints, base frame and external inlet/top accessories.\n" +
+                    "Internal fan/filter/coil details are intentionally omitted to keep the family clean and coordinated.");
 
                 return Result.Succeeded;
             }
@@ -81,7 +82,7 @@ namespace AHU_BUILDER
             SetLength(fm, "AHU_Height", H);
             SetLength(fm, "Base_Height", BaseH);
             SetLength(fm, "Cabinet_1_Length", 2195.0);
-            SetLength(fm, "Inter_Cabinet_Gap", 60.0);
+            SetLength(fm, "Inter_Cabinet_Joint", 60.0);
             SetLength(fm, "Cabinet_2_Length", 2781.0);
         }
 
@@ -97,197 +98,210 @@ namespace AHU_BUILDER
                 fm.Set(p, Ft(valueMm));
         }
 
-        private static void BuildCabinetFrame(Document doc)
+        // A fully continuous core guarantees that the AHU never shows unrealistic open gaps.
+        private static void BuildContinuousCabinet(Document doc)
         {
-            AddBox(doc, 0, 0, 0, L, W, BaseH, "Base Plinth");
+            AddBox(doc, 0, 0, BaseH, L, W, H - BaseH, "AHU Continuous Cabinet Core");
+        }
 
-            double[] xs = { 0, 2195, 2255, 5036 - Frame };
+        private static void BuildBaseAndPerimeterFrame(Document doc)
+        {
+            // Continuous structural plinth.
+            AddBox(doc, 0, 0, 0, L, W, BaseH, "AHU Base Plinth");
+
+            // Raised front/rear base rails.
+            AddBox(doc, 0, -18, BaseH - 18, L, 36, 80, "Front Base Rail");
+            AddBox(doc, 0, W - 18, BaseH - 18, L, 36, 80, "Rear Base Rail");
+
+            // Top perimeter rails.
+            AddBox(doc, 0, -10, H - Frame, L, Frame, Frame, "Front Top Rail");
+            AddBox(doc, 0, W - Frame + 10, H - Frame, L, Frame, Frame, "Rear Top Rail");
+
+            // Corner posts.
+            AddVerticalPost(doc, 0, 0, "Front Left Corner");
+            AddVerticalPost(doc, 0, W - Frame, "Rear Left Corner");
+            AddVerticalPost(doc, L - Frame, 0, "Front Right Corner");
+            AddVerticalPost(doc, L - Frame, W - Frame, "Rear Right Corner");
+        }
+
+        private static void AddVerticalPost(Document doc, double x, double y, string name)
+        {
+            AddBox(doc, x, y, BaseH, Frame, Frame, H - BaseH, name);
+        }
+
+        private static void BuildRoofPanels(Document doc)
+        {
+            // Roof is broken into logical removable sections while remaining continuous.
+            double[] xBreaks = { 0, 930, 1680, 2195, 2255, 3160, 4040, L };
+            for (int i = 0; i < xBreaks.Length - 1; i++)
+            {
+                double x0 = xBreaks[i];
+                double x1 = xBreaks[i + 1];
+                AddBox(doc, x0 + 4, 4, H, x1 - x0 - 8, W - 8, Skin, "Roof Panel " + (i + 1));
+            }
+
+            // Subtle seam strips between roof panels.
+            for (int i = 1; i < xBreaks.Length - 1; i++)
+                AddBox(doc, xBreaks[i] - 5, 0, H + Skin, 10, W, 8, "Roof Seam " + i);
+        }
+
+        private static void BuildFrontServicePanels(Document doc)
+        {
+            // Door/panel extents are arranged from the vendor drawing so the facade reads as one coherent AHU.
+            var doors = new[]
+            {
+                new DoorSpec(130, 780, "Filter Access Door"),
+                new DoorSpec(930, 650, "Coil Access Door"),
+                new DoorSpec(1610, 500, "Electrical Section Door"),
+                new DoorSpec(2325, 720, "Service Door 1"),
+                new DoorSpec(3090, 650, "Service Door 2"),
+                new DoorSpec(3785, 610, "Fan Access Door 1"),
+                new DoorSpec(4425, 480, "Fan Access Door 2")
+            };
+
+            foreach (DoorSpec d in doors)
+                AddServiceDoor(doc, d);
+
+            // Fill every remaining facade zone with fixed panels so there are no unexplained openings.
+            AddFixedFrontPanel(doc, 45, 130, "Front Fixed Panel A");
+            AddFixedFrontPanel(doc, 910, 930, "Front Fixed Panel B");
+            AddFixedFrontPanel(doc, 1580, 1610, "Front Fixed Panel C");
+            AddFixedFrontPanel(doc, 2110, 2195, "Front Fixed Panel D");
+            AddFixedFrontPanel(doc, 2255, 2325, "Front Fixed Panel E");
+            AddFixedFrontPanel(doc, 3045, 3090, "Front Fixed Panel F");
+            AddFixedFrontPanel(doc, 3740, 3785, "Front Fixed Panel G");
+            AddFixedFrontPanel(doc, 4395, 4425, "Front Fixed Panel H");
+            AddFixedFrontPanel(doc, 4905, L - 45, "Front Fixed Panel I");
+        }
+
+        private static void AddServiceDoor(Document doc, DoorSpec d)
+        {
+            const double y = -Skin;
+            const double z = 185.0;
+            const double height = 1435.0;
+
+            double width = d.Width - 2 * DoorGap;
+            double x = d.X + DoorGap;
+
+            // Door leaf.
+            AddBox(doc, x, y, z, width, Skin, height, d.Name);
+
+            // Door perimeter extrusion gives the leaf a realistic framed appearance.
+            AddBox(doc, x, y - 6, z, width, 8, 26, d.Name + " Bottom Edge");
+            AddBox(doc, x, y - 6, z + height - 26, width, 8, 26, d.Name + " Top Edge");
+            AddBox(doc, x, y - 6, z, 24, 8, height, d.Name + " Left Edge");
+            AddBox(doc, x + width - 24, y - 6, z, 24, 8, height, d.Name + " Right Edge");
+
+            // Three hinges on the left edge.
+            double[] hingeZ = { z + 150, z + height / 2.0 - 45, z + height - 240 };
+            foreach (double hz in hingeZ)
+                AddBox(doc, x - 18, y - 28, hz, 38, 22, 90, d.Name + " Hinge");
+
+            // Vertical pull handle on the opposite side.
+            AddBox(doc, x + width - 95, y - 58, z + height * 0.43, 26, 32, 220, d.Name + " Handle");
+            AddBox(doc, x + width - 108, y - 65, z + height * 0.43 + 20, 12, 18, 180, d.Name + " Handle Return");
+        }
+
+        private static void AddFixedFrontPanel(Document doc, double x0, double x1, string name)
+        {
+            if (x1 <= x0) return;
+            AddBox(doc, x0, -Skin + 2, 185, x1 - x0, Skin - 4, 1435, name);
+        }
+
+        private static void BuildRearPanels(Document doc)
+        {
+            // Rear elevation uses clean removable panels rather than exposing internals.
+            double[] xBreaks = { 45, 930, 1680, 2195, 2255, 3160, 4040, L - 45 };
+            for (int i = 0; i < xBreaks.Length - 1; i++)
+            {
+                double x0 = xBreaks[i];
+                double x1 = xBreaks[i + 1];
+                AddBox(doc, x0 + 3, W, 185, x1 - x0 - 6, Skin, 1435, "Rear Panel " + (i + 1));
+            }
+        }
+
+        private static void BuildEndPanels(Document doc)
+        {
+            // Left and right cabinet ends are fully closed around the external air connection accessories.
+            AddBox(doc, -Skin, 45, 150, Skin, W - 90, H - 210, "Left End Panel");
+            AddBox(doc, L, 45, 150, Skin, W - 90, H - 210, "Right End Panel");
+        }
+
+        private static void BuildModuleJoints(Document doc)
+        {
+            // Main vendor module joint from the drawing: Cabinet 1 = 2195, joint = 60, Cabinet 2 starts at 2255.
+            AddJointFrame(doc, 2195, "Cabinet Joint Left");
+            AddJointFrame(doc, 2255, "Cabinet Joint Right");
+
+            // Additional vertical frame lines follow facade panelization.
+            double[] xs = { 910, 1580, 2110, 3045, 3740, 4395 };
             foreach (double x in xs)
+                AddJointFrame(doc, x, "Panel Frame @ " + x.ToString("0") + " mm");
+        }
+
+        private static void AddJointFrame(Document doc, double x, string name)
+        {
+            AddBox(doc, x - 14, -32, BaseH + 20, 28, 38, H - BaseH - 40, name + " Front");
+            AddBox(doc, x - 14, W - 6, BaseH + 20, 28, 38, H - BaseH - 40, name + " Rear");
+            AddBox(doc, x - 14, 0, H - 25, 28, W, 25, name + " Top");
+        }
+
+        private static void BuildInletLouver(Document doc)
+        {
+            // External inlet box derived from the left-side DXF damper position, but modeled as a realistic weather louver.
+            const double ext = 180.0;
+            const double y0 = 180.0;
+            const double widthY = 1420.0;
+            const double z0 = 650.0;
+            const double height = 610.0;
+
+            // Hood/frame around the louver.
+            AddBox(doc, -ext, y0, z0, ext, widthY, 45, "Inlet Louver Bottom");
+            AddBox(doc, -ext, y0, z0 + height - 45, ext, widthY, 45, "Inlet Louver Top");
+            AddBox(doc, -ext, y0, z0, ext, 45, height, "Inlet Louver Side A");
+            AddBox(doc, -ext, y0 + widthY - 45, z0, ext, 45, height, "Inlet Louver Side B");
+
+            // Horizontal blades.
+            for (int i = 0; i < 6; i++)
             {
-                AddBox(doc, x, 0, BaseH, Frame, Frame, H - BaseH, "Frame Post");
-                AddBox(doc, x, W - Frame, BaseH, Frame, Frame, H - BaseH, "Frame Post");
-            }
-
-            AddRailSet(doc, 0, 2195, "Cabinet 1");
-            AddRailSet(doc, 2255, 5036, "Cabinet 2");
-        }
-
-        private static void AddRailSet(Document doc, double x0, double x1, string prefix)
-        {
-            double len = x1 - x0;
-            AddBox(doc, x0, 0, BaseH, len, Frame, Frame, prefix + " Bottom Front Rail");
-            AddBox(doc, x0, W - Frame, BaseH, len, Frame, Frame, prefix + " Bottom Rear Rail");
-            AddBox(doc, x0, 0, H - Frame, len, Frame, Frame, prefix + " Top Front Rail");
-            AddBox(doc, x0, W - Frame, H - Frame, len, Frame, Frame, prefix + " Top Rear Rail");
-        }
-
-        private static void BuildExternalPanelsAndDoors(Document doc)
-        {
-            const double skin = 22.0;
-
-            // Roof and rear skin split by cabinet so the 60 mm inter-cabinet joint remains visible.
-            AddBox(doc, Frame, Frame, H - skin, 2195 - 2 * Frame, W - 2 * Frame, skin, "Cabinet 1 Roof Panel");
-            AddBox(doc, 2255 + Frame, Frame, H - skin, 2781 - 2 * Frame, W - 2 * Frame, skin, "Cabinet 2 Roof Panel");
-            AddBox(doc, Frame, W - skin, BaseH + Frame, 2195 - 2 * Frame, skin, H - BaseH - 2 * Frame, "Cabinet 1 Rear Panel");
-            AddBox(doc, 2255 + Frame, W - skin, BaseH + Frame, 2781 - 2 * Frame, skin, H - BaseH - 2 * Frame, "Cabinet 2 Rear Panel");
-
-            // End panels.
-            AddBox(doc, 0, Frame, BaseH + Frame, skin, W - 2 * Frame, H - BaseH - 2 * Frame, "Inlet End Panel");
-            AddBox(doc, L - skin, Frame, BaseH + Frame, skin, W - 2 * Frame, H - BaseH - 2 * Frame, "Outlet End Panel");
-
-            // Access doors derived from DXF front-view extents.
-            AddFrontDoor(doc, 422.2, 733.8, 162, 1560, "Filter Access Door");
-            AddFrontDoor(doc, 1661.9, 300.0, 162, 1560, "Electric Coil Removable Panel");
-            AddFrontDoor(doc, 2535.3, 531.7, 162, 1560, "Empty Section Access Door");
-            AddFrontDoor(doc, 3531.4, 495.6, 162, 1560, "Fan Service Door 1");
-            AddFrontDoor(doc, 4355.8, 691.2, 162, 1560, "Fan Service Door 2");
-        }
-
-        private static void AddFrontDoor(Document doc, double x, double widthX, double z, double height, string name)
-        {
-            const double t = 28.0;
-            AddBox(doc, x, -t, z, widthX, t, height, name);
-            // Simple vertical handle.
-            AddBox(doc, x + widthX - 85, -55, z + height * 0.45, 22, 30, 220, name + " Handle");
-        }
-
-        private static void BuildInternalBulkheads(Document doc)
-        {
-            double[] bulkheads = { 531, 1191, 1686, 3102, 4382 };
-            foreach (double x in bulkheads)
-                AddBox(doc, x, 62, 162, 12, 1720, 1560, "Internal Bulkhead @ " + x.ToString("0") + " mm");
-        }
-
-        private static void BuildInletDampers(Document doc)
-        {
-            // Left-side inlet damper: exact DXF bbox approximately x=-128..2, y=-6.8..1782, z=687..1197.
-            AddBox(doc, -128, 0, 687, 130, W, 510, "Inlet Damper Frame");
-            for (int i = 0; i < 7; ++i)
-                AddBox(doc, -145, 80 + i * 245, 900, 165, 180, 35, "Inlet Damper Blade " + (i + 1));
-
-            // Top damper from DXF bbox approximately x=62..472, y=593..1227, z=1782..1912.
-            AddBox(doc, 62, 593, 1782, 410, 634, 130, "Top Damper Frame");
-            for (int i = 0; i < 5; ++i)
-                AddBox(doc, 95 + i * 72, 610, 1795, 28, 600, 100, "Top Damper Blade " + (i + 1));
-        }
-
-        private static void BuildFilterBank(Document doc)
-        {
-            // Flat filter face locations taken from the DXF.
-            double[] ys = { 171.5, 463.5, 1060.5 };
-            double[] zs = { 211.5, 813.5, 1415.5 };
-
-            int n = 1;
-            foreach (double y in ys)
-            {
-                foreach (double z in zs)
-                {
-                    double filterW = y < 400 ? 287 : 592;
-                    double filterH = z > 1400 ? 287 : 592;
-                    if (y < 400 && z > 1400) continue; // this cell is absent in vendor DXF.
-
-                    AddBox(doc, 532, y, z, 48, filterW, filterH, "Flat Filter " + n);
-                    AddBox(doc, 600, y, z, 510, filterW, filterH, "Bag Filter " + n);
-                    n++;
-                }
+                double z = z0 + 85 + i * 78;
+                AddBox(doc, -ext - 18, y0 + 50, z, ext + 18, widthY - 100, 22, "Inlet Louver Blade " + (i + 1));
             }
         }
 
-        private static void BuildCoolingCoil(Document doc)
+        private static void BuildTopWeatherHood(Document doc)
         {
-            AddBox(doc, 1192, 199, 212, 300, 1495, 1450, "Cooling Coil");
+            // Top external connection from the vendor DXF, represented as a closed curb/hood.
+            const double x = 90.0;
+            const double y = 590.0;
+            const double lx = 410.0;
+            const double ly = 630.0;
+            const double hz = 150.0;
 
-            // Tube/header details visible enough for coordination without creating thousands of fins.
-            for (int i = 0; i < 8; ++i)
-                AddBox(doc, 1220 + i * 32, 220, 250, 10, 1450, 1370, "Cooling Coil Fin Pack " + (i + 1));
-
-            AddBox(doc, 1251, 121, 232, 16, 16, 1410, "Cooling Coil Vertical Pipe");
-            AddBox(doc, 1251, -104, 1630, 16, 225, 16, "Cooling Coil Top Pipe");
+            AddBox(doc, x, y, H + Skin, lx, ly, 35, "Top Hood Base");
+            AddBox(doc, x + 18, y + 18, H + Skin + 35, lx - 36, 32, hz, "Top Hood Side 1");
+            AddBox(doc, x + 18, y + ly - 50, H + Skin + 35, lx - 36, 32, hz, "Top Hood Side 2");
+            AddBox(doc, x + 18, y + 18, H + Skin + 35, 32, ly - 36, hz, "Top Hood End 1");
+            AddBox(doc, x + lx - 50, y + 18, H + Skin + 35, 32, ly - 36, hz, "Top Hood End 2");
+            AddBox(doc, x - 8, y - 8, H + Skin + 35 + hz, lx + 16, ly + 16, 30, "Top Hood Cap");
         }
 
-        private static void BuildElectricCoil(Document doc)
+        private static void AddBox(
+            Document doc,
+            double xMm,
+            double yMm,
+            double zMm,
+            double lengthMm,
+            double widthMm,
+            double heightMm,
+            string name)
         {
-            AddBox(doc, 1687, 217, 222, 200, 1410, 1440, "Electric Coil");
-            for (int i = 0; i < 7; ++i)
-                AddBox(doc, 1700 + i * 25, 250, 250, 8, 1350, 1380, "Electric Coil Bank " + (i + 1));
-        }
+            if (lengthMm <= 0 || widthMm <= 0 || heightMm <= 0) return;
 
-        private static void BuildDrainPansAndPipeStubs(Document doc)
-        {
-            AddBox(doc, 1203.5, 82, 32, 437, 1680, 130, "Cooling Coil Drain Pan");
-            AddBox(doc, 2613, 82, 32, 420, 1680, 130, "Empty Section 06 Drain Pan");
-            AddBox(doc, 3113, 82, 32, 110, 1680, 130, "Dehumidifier Drain Pan");
-            AddBox(doc, 3303, 82, 32, 220, 1680, 130, "Empty Section 08 Drain Pan");
-
-            AddBox(doc, 1409.5, -68, 59.5, 25, 150, 25, "Cooling Drain Pipe Stub");
-            AddBox(doc, 2810.5, -68, 59.5, 25, 150, 25, "Section 06 Drain Pipe Stub");
-            AddBox(doc, 3155.5, -68, 59.5, 25, 150, 25, "Dehumidifier Drain Pipe Stub");
-            AddBox(doc, 3400.5, -68, 59.5, 25, 150, 25, "Section 08 Drain Pipe Stub");
-        }
-
-        private static void BuildDehumidifier(Document doc)
-        {
-            // Vendor block is planar in DXF; give it a practical 130 mm thickness for readable 3D coordination.
-            AddBox(doc, 3103, 172, 222, 130, 1500, 1440, "Dehumidifier Module");
-            for (int i = 0; i < 6; ++i)
-                AddBox(doc, 3115 + i * 18, 220, 260, 7, 1400, 1360, "Dehumidifier Fin Pack " + (i + 1));
-        }
-
-        private static void BuildFanArray(Document doc)
-        {
-            // Four EC fans from the DXF bboxes. Octagonal prisms are used for stable Revit geometry.
-            AddFan(doc, 4383, 188.7, 234.2, 438.6, 630, 630, "EC Fan 1");
-            AddFan(doc, 4383, 1025.3, 234.2, 438.6, 630, 630, "EC Fan 2");
-            AddFan(doc, 4383, 188.7, 1017.6, 438.6, 630, 630, "EC Fan 3");
-            AddFan(doc, 4383, 1025.3, 1017.6, 438.6, 630, 630, "EC Fan 4");
-
-            // Damper blocks immediately upstream of each fan.
-            AddBox(doc, 4253, 212, 280, 130, 562, 540, "Fan Damper 1");
-            AddBox(doc, 4253, 1049, 280, 130, 562, 540, "Fan Damper 2");
-            AddBox(doc, 4253, 212, 1064, 130, 562, 540, "Fan Damper 3");
-            AddBox(doc, 4253, 1049, 1064, 130, 562, 540, "Fan Damper 4");
-        }
-
-        private static void BuildLights(Document doc)
-        {
-            AddBox(doc, 817, 820, 1644, 100, 205, 74, "Filter Section Light");
-            AddBox(doc, 2823, 820, 1644, 100, 205, 74, "Empty Section Light");
-            AddBox(doc, 4308, 820, 1644, 100, 205, 74, "Fan Section Light");
-        }
-
-        private static void AddFan(Document doc, double x, double y, double z, double lengthX, double sizeY, double sizeZ, string name)
-        {
-            double cy = y + sizeY / 2.0;
-            double cz = z + sizeZ / 2.0;
-            double r = Math.Min(sizeY, sizeZ) * 0.47;
-
-            List<XYZ> pts = new List<XYZ>();
-            const int sides = 16;
-            for (int i = 0; i < sides; ++i)
-            {
-                double a = 2.0 * Math.PI * i / sides;
-                pts.Add(new XYZ(Ft(x), Ft(cy + r * Math.Cos(a)), Ft(cz + r * Math.Sin(a))));
-            }
-
-            CurveLoop loop = new CurveLoop();
-            for (int i = 0; i < sides; ++i)
-                loop.Append(Line.CreateBound(pts[i], pts[(i + 1) % sides]));
-
-            Solid solid = GeometryCreationUtilities.CreateExtrusionGeometry(new[] { loop }, XYZ.BasisX, Ft(lengthX));
-            AddSolid(doc, solid, name);
-
-            // Hub proxy.
-            AddBox(doc, x + lengthX * 0.25, cy - 90, cz - 90, lengthX * 0.5, 180, 180, name + " Hub");
-        }
-
-        private static void AddBox(Document doc, double x, double y, double z, double dx, double dy, double dz, string name)
-        {
-            if (dx <= 0 || dy <= 0 || dz <= 0) return;
-
-            XYZ p1 = new XYZ(Ft(x), Ft(y), Ft(z));
-            XYZ p2 = new XYZ(Ft(x + dx), Ft(y), Ft(z));
-            XYZ p3 = new XYZ(Ft(x + dx), Ft(y + dy), Ft(z));
-            XYZ p4 = new XYZ(Ft(x), Ft(y + dy), Ft(z));
+            XYZ p1 = new XYZ(Ft(xMm), Ft(yMm), Ft(zMm));
+            XYZ p2 = new XYZ(Ft(xMm + lengthMm), Ft(yMm), Ft(zMm));
+            XYZ p3 = new XYZ(Ft(xMm + lengthMm), Ft(yMm + widthMm), Ft(zMm));
+            XYZ p4 = new XYZ(Ft(xMm), Ft(yMm + widthMm), Ft(zMm));
 
             CurveLoop loop = new CurveLoop();
             loop.Append(Line.CreateBound(p1, p2));
@@ -295,49 +309,28 @@ namespace AHU_BUILDER
             loop.Append(Line.CreateBound(p3, p4));
             loop.Append(Line.CreateBound(p4, p1));
 
-            Solid solid = GeometryCreationUtilities.CreateExtrusionGeometry(new[] { loop }, XYZ.BasisZ, Ft(dz));
-            AddSolid(doc, solid, name);
-        }
+            Solid solid = GeometryCreationUtilities.CreateExtrusionGeometry(
+                new List<CurveLoop> { loop },
+                XYZ.BasisZ,
+                Ft(heightMm));
 
-        private static void AddSolid(Document doc, Solid solid, string name)
-        {
             DirectShape ds = DirectShape.CreateElement(doc, new ElementId(BuiltInCategory.OST_MechanicalEquipment));
             ds.Name = name;
-            ds.SetShape(new GeometryObject[] { solid });
+            ds.SetShape(new List<GeometryObject> { solid });
         }
 
-        private static View Find3DOrPlanView(Document doc)
+        private sealed class DoorSpec
         {
-            View v = new FilteredElementCollector(doc).OfClass(typeof(View3D)).Cast<View3D>()
-                .FirstOrDefault(x => !x.IsTemplate);
-            if (v != null) return v;
-
-            v = new FilteredElementCollector(doc).OfClass(typeof(ViewPlan)).Cast<ViewPlan>()
-                .FirstOrDefault(x => !x.IsTemplate);
-            return v ?? doc.ActiveView;
-        }
-
-        private static void TryImportDxf(Document doc, View view, string path)
-        {
-            if (view == null || !File.Exists(path)) return;
-
-            try
+            public DoorSpec(double x, double width, string name)
             {
-                DWGImportOptions options = new DWGImportOptions
-                {
-                    Placement = ImportPlacement.Origin,
-                    OrientToView = false,
-                    ThisViewOnly = false,
-                    Unit = ImportUnit.Millimeter
-                };
+                X = x;
+                Width = width;
+                Name = name;
+            }
 
-                ElementId importedId;
-                doc.Import(path, options, view, out importedId);
-            }
-            catch
-            {
-                // Native geometry must still be created even if CAD import is rejected by the current family/view.
-            }
+            public double X { get; }
+            public double Width { get; }
+            public string Name { get; }
         }
     }
 }
