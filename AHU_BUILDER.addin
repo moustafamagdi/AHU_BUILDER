@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<RevitAddIns>
+  <AddIn Type="Command">
+    <Name>AHU Builder</Name>
+    <Assembly>C:\RevitAddins\AHU_BUILDER\AHU_BUILDER.dll</Assembly>
+    <AddInId>7F237C49-8AA4-4C64-A552-A3AAE65431A4</AddInId>
+    <FullClassName>AHU_BUILDER.BuildAhuFamilyCommand</FullClassName>
+    <Text>Build AHU Family</Text>
+    <VendorId>MM</VendorId>
+    <VendorDescription>AHU family builder for Revit 2024</VendorDescription>
+  </AddIn>
+</RevitAddIns>
